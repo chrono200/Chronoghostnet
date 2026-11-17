@@ -30,3 +30,8 @@ Every push to `main` triggers the GitHub Actions APK build. Open the repository'
 
 ## Build locally
 Open this repository in Android Studio, allow Gradle sync, connect a physical Android device, then run the app or choose **Build → Build APK(s)**.
+
+
+## Documentation
+
+The detailed developer guide is available in [`docs/DEVELOPER_HANDBOOK.md`](docs/DEVELOPER_HANDBOOK.md). It explains the current app screen by screen, the Kotlin/Android implementation, permissions, radio behaviour, security boundaries, build and testing steps, and the roadmap. It also clearly separates implemented features from planned features.
