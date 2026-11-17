@@ -92,6 +92,7 @@ private fun GhostTheme(content: @Composable () -> Unit) {
     ), content = content)
 }
 
+@SuppressLint("MissingPermission")
 @Composable
 private fun GhostnetApp() {
     val context = LocalContext.current
@@ -143,7 +144,6 @@ private fun GhostnetApp() {
             }.getOrDefault(false)
             status = if (started) "BLE scan active" else "Bluetooth scanner unavailable"
             if (wifiManager != null && wifiChannel != null) {
-                @SuppressLint("MissingPermission")
                 wifiManager.discoverPeers(wifiChannel, object : WifiP2pManager.ActionListener {
                     override fun onSuccess() { status = "BLE + Wi-Fi Direct discovery requested" }
                     override fun onFailure(reason: Int) { status = "Wi-Fi Direct discovery error " + reason }
