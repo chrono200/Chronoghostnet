@@ -1,18 +1,23 @@
 # ChronoGhostnet
 **THE NETWORK HAS NO CENTRE.**
 
-ChronoGhostnet is an offline-first Android peer-networking project. Its long-term goal is private device-to-device messaging and file exchange with store-and-forward delivery.
+ChronoGhostnet is an offline-first Android radio-intelligence and peer-networking foundation. Its long-term goal is private device-to-device messaging and file exchange with store-and-forward delivery.
 
-## Foundation 0.1.0
-- Native Kotlin + Jetpack Compose app.
-- Dark intelligence command centre.
-- Command, Ghost Radar, Topology, Peer Intelligence and Diagnostics screens.
-- BLE scanning for nearby radio candidates.
+## Foundation 0.2.0
+- Native Kotlin + Jetpack Compose interface with subtle animated screen transitions and a pulsing network node.
+- Custom ChronoGhostnet adaptive launcher icon.
+- Command, Ghost Radar, Signal Observatory, Topology, Peer Intelligence and Diagnostics screens.
+- BLE discovery of nearby advertising devices and visible signal metadata.
+- Wi-Fi scan metadata: SSID, BSSID, RSSI, frequency and advertised security mode.
 - Wi-Fi Direct peer discovery request.
 - EC P-256 device keypair in Android Keystore; SHA-256 public-key fingerprint.
-- Runtime nearby-device permission request.
+- Runtime permissions with an explicit Location permission for Android Wi-Fi scan results.
 
-**This is not yet a mesh messenger.** It does not send messages or files. It does not yet implement authenticated peer handshakes, encrypted sessions, TCP transport, persistent relay queues or multi-hop routing. Nearby radio devices remain unverified.
+## Signal Observatory — legal scope
+The observatory displays broadcast/discovery metadata that Android exposes to ordinary apps. It does **not** capture or decode private Wi-Fi/Bluetooth payloads, decrypt traffic, bypass encryption, or intercept communications. Android controls scan frequency and may return cached or throttled Wi-Fi results; refresh is not guaranteed to produce a new scan immediately. Bluetooth observations are limited to BLE advertisements visible to the app.
+
+## What this build does not do
+This is not yet a mesh messenger. It does not send messages or files. It does not yet implement authenticated peer handshakes, encrypted sessions, TCP transport, persistent relay queues or multi-hop routing. Nearby radio devices remain unverified.
 
 ## Decisions
 - Networking: BLE discovery + Wi-Fi Direct transport path.
