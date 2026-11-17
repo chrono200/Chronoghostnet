@@ -5,7 +5,11 @@ import android.annotation.SuppressLint
 import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.content.pm.PackageManager
+import android.net.wifi.WifiManager
 import android.net.wifi.p2p.WifiP2pManager
+import android.content.BroadcastReceiver
+import android.content.Intent
+import android.content.IntentFilter
 import android.os.Build
 import android.os.Bundle
 import android.security.keystore.KeyGenParameterSpec
@@ -14,6 +18,15 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -74,7 +87,8 @@ private object LocalIdentity {
 }
 
 private data class RadioPeer(val address: String, val name: String, val rssi: Int)
-private enum class Screen(val label: String) { COMMAND("Command"), RADAR("Radar"), TOPOLOGY("Topology"), PEERS("Peers"), SYSTEM("System") }
+private data class WifiSignal(val ssid: String, val bssid: String, val rssi: Int, val frequency: Int, val security: String)
+private enum class Screen(val label: String) { COMMAND("Command"), RADAR("Radar"), SPECTRUM("Spectrum"), TOPOLOGY("Topology"), PEERS("Peers"), SYSTEM("System") }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -99,20 +113,23 @@ private fun GhostnetApp() {
     var screen by remember { mutableStateOf(Screen.COMMAND) }
     var scanning by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf("Standby") }
+    var wifiStatus by remember { mutableStateOf("Awaiting scan") }
+    val wifiSignals = remember { mutableStateListOf<WifiSignal>() }
     val candidates = remember { mutableStateListOf<RadioPeer>() }
     val bluetooth = remember { context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager }
+    val wifi = remember { context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager }
     val wifiManager = remember { context.getSystemService(Context.WIFI_P2P_SERVICE) as? WifiP2pManager }
     val wifiChannel = remember { wifiManager?.initialize(context, context.mainLooper, null) }
     val fingerprint = remember { runCatching { LocalIdentity.fingerprint() }.getOrElse { "IDENTITY INITIALIZATION FAILED" } }
 
     val permissions = remember {
         buildList {
+            add(Manifest.permission.ACCESS_FINE_LOCATION)
             if (Build.VERSION.SDK_INT >= 31) {
                 add(Manifest.permission.BLUETOOTH_SCAN)
                 add(Manifest.permission.BLUETOOTH_CONNECT)
-            } else add(Manifest.permission.ACCESS_FINE_LOCATION)
+            }
             if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.NEARBY_WIFI_DEVICES)
-            else if (Build.VERSION.SDK_INT >= 29) add(Manifest.permission.ACCESS_FINE_LOCATION)
         }.distinct().toTypedArray()
     }
     val scanCallback = remember {
@@ -126,9 +143,62 @@ private fun GhostnetApp() {
             }
         }
     }
+    val wifiReceiver = remember {
+        object : BroadcastReceiver() {
+            override fun onReceive(c: Context?, intent: Intent?) {
+                if (intent?.action == WifiManager.SCAN_RESULTS_AVAILABLE_ACTION) {
+                    runCatching {
+                        wifiSignals.clear()
+                        wifi.scanResults.take(60).forEach { r ->
+                            val caps = r.capabilities.orEmpty()
+                            val security = when {
+                                caps.contains("WPA3") -> "WPA3"
+                                caps.contains("WPA2") -> "WPA2"
+                                caps.contains("WPA") -> "WPA"
+                                caps.contains("WEP") -> "WEP"
+                                else -> "OPEN"
+                            }
+                            wifiSignals.add(WifiSignal(r.SSID.ifBlank { "<hidden network>" }, r.BSSID ?: "Unavailable", r.level, r.frequency, security))
+                        }
+                        wifiStatus = "Updated · " + wifiSignals.size + " networks observed"
+                    }.onFailure { wifiStatus = "Scan results unavailable: permission or location setting required" }
+                }
+            }
+        }
+    }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
         if (grants.values.all { it }) scanning = true
         else status = "Permissions denied — enable Nearby devices in Settings"
+    }
+
+    val wifiPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) {
+            runCatching { wifi.startScan() }
+            wifiStatus = "Scan requested · waiting for Android radio results"
+        } else wifiStatus = "Location permission required by Android for nearby Wi-Fi scan results"
+    }
+
+    fun refreshWifi() {
+        val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if (!granted) wifiPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+        else {
+            val accepted = runCatching { wifi.startScan() }.getOrDefault(false)
+            wifiStatus = if (accepted) "Scan requested · waiting for radio results" else "Scan throttled by Android · showing latest available results"
+            runCatching {
+                wifiSignals.clear()
+                wifi.scanResults.take(60).forEach { r ->
+                    val caps = r.capabilities.orEmpty()
+                    val security = when {
+                        caps.contains("WPA3") -> "WPA3"
+                        caps.contains("WPA2") -> "WPA2"
+                        caps.contains("WPA") -> "WPA"
+                        caps.contains("WEP") -> "WEP"
+                        else -> "OPEN"
+                    }
+                    wifiSignals.add(WifiSignal(r.SSID.ifBlank { "<hidden network>" }, r.BSSID ?: "Unavailable", r.level, r.frequency, security))
+                }
+            }.onFailure { wifiStatus = "Enable Location and grant permission to read Wi-Fi scan metadata" }
+        }
     }
 
     fun beginScan() {
@@ -155,7 +225,13 @@ private fun GhostnetApp() {
         }
     }
     DisposableEffect(Unit) {
-        onDispose { runCatching { bluetooth.adapter?.bluetoothLeScanner?.stopScan(scanCallback) } }
+        val filter = IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION)
+        if (Build.VERSION.SDK_INT >= 33) context.registerReceiver(wifiReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        else @Suppress("DEPRECATION") context.registerReceiver(wifiReceiver, filter)
+        onDispose {
+            runCatching { bluetooth.adapter?.bluetoothLeScanner?.stopScan(scanCallback) }
+            runCatching { context.unregisterReceiver(wifiReceiver) }
+        }
     }
 
     Scaffold(
@@ -166,6 +242,7 @@ private fun GhostnetApp() {
                     val icon = when (item) {
                         Screen.COMMAND -> Icons.Default.Home
                         Screen.RADAR -> Icons.Default.BluetoothSearching
+                        Screen.SPECTRUM -> Icons.Default.GraphicEq
                         Screen.TOPOLOGY -> Icons.Default.Share
                         Screen.PEERS -> Icons.Default.Devices
                         Screen.SYSTEM -> Icons.Default.Settings
@@ -186,12 +263,15 @@ private fun GhostnetApp() {
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             Header(fingerprint)
-            when (screen) {
+            AnimatedContent(targetState = screen, transitionSpec = { fadeIn(tween(180)) togetherWith fadeOut(tween(120)) }, label = "screen-transition") { activeScreen ->
+            when (activeScreen) {
                 Screen.COMMAND -> CommandScreen(candidates.size, { screen = Screen.RADAR }, { screen = Screen.TOPOLOGY })
                 Screen.RADAR -> RadarScreen(scanning, candidates.toList(), status, ::beginScan) { scanning = false }
+                Screen.SPECTRUM -> SpectrumScreen(candidates.toList(), wifiSignals.toList(), wifiStatus, ::refreshWifi)
                 Screen.TOPOLOGY -> TopologyScreen(candidates.size)
                 Screen.PEERS -> PeersScreen(candidates.toList())
                 Screen.SYSTEM -> SystemScreen(fingerprint, status)
+            }
             }
         }
     }
@@ -249,6 +329,10 @@ private fun CommandScreen(count: Int, onRadar: () -> Unit, onTopology: () -> Uni
 
 @Composable
 private fun NetworkGraphic(modifier: Modifier) {
+    val pulse by rememberInfiniteTransition(label = "network-pulse").animateFloat(
+        initialValue = 0.72f, targetValue = 1.18f,
+        animationSpec = infiniteRepeatable(tween(1500), RepeatMode.Reverse), label = "pulse"
+    )
     Canvas(modifier) {
         val center = Offset(size.width * .68f, size.height * .55f)
         val nodes = listOf(Offset(size.width*.2f,size.height*.35f), Offset(size.width*.46f,size.height*.22f), Offset(size.width*.87f,size.height*.28f), Offset(size.width*.85f,size.height*.78f), Offset(size.width*.38f,size.height*.8f))
@@ -261,7 +345,8 @@ private fun NetworkGraphic(modifier: Modifier) {
             drawCircle(Palette.Cyan.copy(alpha=.12f), 9.dp.toPx(), p)
             drawCircle(Palette.Cyan.copy(alpha=.7f), 2.5.dp.toPx(), p)
         }
-        drawCircle(Palette.Cyan.copy(alpha=.12f), 27.dp.toPx(), center)
+        drawCircle(Palette.Cyan.copy(alpha=.08f), (27.dp.toPx() * pulse), center)
+        drawCircle(Palette.Cyan.copy(alpha=.28f), (16.dp.toPx() * pulse), center)
         drawCircle(Palette.Cyan, 5.dp.toPx(), center)
     }
 }
@@ -329,6 +414,63 @@ private fun RadarScreen(scanning: Boolean, peers: List<RadioPeer>, status: Strin
                 }
             }
         }
+    }
+}
+
+
+@Composable
+private fun SpectrumScreen(blePeers: List<RadioPeer>, wifiPeers: List<WifiSignal>, status: String, refresh: () -> Unit) {
+    Column(Modifier.fillMaxSize().padding(17.dp)) {
+        Text("PASSIVE RADIO INTELLIGENCE", color = Palette.Cyan, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+        Text("Signal observatory", color = Palette.Text, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+        Text("Live nearby radio metadata. No payload interception, decryption or traffic capture.", color = Palette.Muted, style = MaterialTheme.typography.bodySmall)
+        Spacer(Modifier.height(12.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Metric("BLE DEVICES", blePeers.size.toString().padStart(2,'0'), Modifier.weight(1f))
+            Metric("WI-FI NETWORKS", wifiPeers.size.toString().padStart(2,'0'), Modifier.weight(1f))
+        }
+        Spacer(Modifier.height(12.dp))
+        Button(onClick = refresh, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Palette.Cyan, contentColor = Palette.Void)) {
+            Icon(Icons.Default.Refresh, null)
+            Spacer(Modifier.width(8.dp))
+            Text("SCAN WI-FI SPECTRUM", fontWeight = FontWeight.Bold)
+        }
+        Text(status, color = Palette.Amber, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top=6.dp))
+        Spacer(Modifier.height(12.dp))
+        Text("WI-FI BEACONS · SSID / BSSID / RSSI / FREQUENCY / SECURITY", color = Palette.Cyan, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+        if (wifiPeers.isEmpty()) {
+            Text("No scan results yet. Grant Location permission and enable Location services. Android may throttle scans.", color = Palette.Muted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical=10.dp))
+        } else {
+            LazyColumn(Modifier.weight(1f, fill=false).heightIn(max=250.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                items(wifiPeers, key = { it.bssid }) { p ->
+                    Column(Modifier.fillMaxWidth().background(Palette.Obsidian, RoundedCornerShape(10.dp)).padding(10.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(p.ssid, color = Palette.Text, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                            Text(p.rssi.toString() + " dBm", color = if (p.rssi > -65) Palette.Green else Palette.Amber, style = MaterialTheme.typography.labelSmall)
+                        }
+                        Text(p.bssid + " · " + p.frequency + " MHz · " + p.security, color = Palette.Muted, style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Text("BLUETOOTH LE · DEVICE / ADDRESS / SIGNAL STRENGTH", color = Palette.Cyan, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+        if (blePeers.isEmpty()) Text("No BLE advertisements observed in the current radar session.", color = Palette.Muted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical=8.dp))
+        else {
+            LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                items(blePeers.take(20), key = { it.address }) { p ->
+                    Row(Modifier.fillMaxWidth().background(Palette.Obsidian, RoundedCornerShape(9.dp)).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(p.name, color = Palette.Text, fontWeight = FontWeight.SemiBold)
+                            Text(p.address, color = Palette.Muted, style = MaterialTheme.typography.labelSmall)
+                        }
+                        Text(p.rssi.toString() + " dBm", color = Palette.Cyan, style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text("LEGAL SCOPE · Public beacon metadata and your device's own radio diagnostics only. Encrypted communications remain untouched.", color = Palette.Muted, style = MaterialTheme.typography.labelSmall)
     }
 }
 
